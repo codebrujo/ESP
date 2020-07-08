@@ -65,7 +65,7 @@ void reportData(){
     dtostrf(historical_data.sensor_temp[i], 3, 2, Str);
     Serial.write(Str, sizeof(Str)/sizeof(char));
     for (int j=0; j<sizeof(Str)/sizeof(char); j++) {Str[j]=' ';}
-    dtostrf(historical_data.sensor_pressure[i], 3, 2, Str);
+    dtostrf(historical_data.sensor_pressure[i], 3, 3, Str);
     Serial.write(Str, sizeof(Str)/sizeof(char));
     Serial.println("");
   }
