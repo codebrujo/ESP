@@ -1,4 +1,4 @@
-h1 ESP8266/NodeMCU sample projects:
+ESP8266/NodeMCU sample projects:
 =============================
 
 blynk_DHT22_relay
