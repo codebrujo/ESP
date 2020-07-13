@@ -15,7 +15,7 @@ Manage irrigation using analog sensor and timer
 
 esp-geiger
 ------------
-Simple geiger counter on NodeMCU board. Also controls internet connection and reboot cellular modem if it is lost.
+Online geiger counter based on NodeMCU and RadiationD-v1.1-CAJOE boards. Also controls cell modem and reboot it if the connection lost.
 
 meteostation
 ------------
