@@ -1,3 +1,4 @@
 settings.h
 settings.cpp
 CREDS/
+power management/power-controller/settings.h
