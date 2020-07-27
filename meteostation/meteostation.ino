@@ -5,7 +5,7 @@
 #include "settings.h"
 
 //---------BLYNK init---------
-#define BLYNK_PRINT Serial    // Comment this out to disable prints and save space
+#define BLYNK_PRINT Serial                        // Comment this out to disable prints and save space
 BlynkTimer timer_read;
 BlynkTimer timer_report;
 BlynkTimer timer_history;
@@ -14,9 +14,11 @@ BlynkTimer timer_rtc_update;
 
 //---------BMP280 init---------
 Adafruit_BMP280 bmp;
-#define SEALEVELPRESSURE_HPA (1006.581)       // Local sea level pressure
-#define HISTORY_VOLUME 16                     // Historical data storage volume
-#define HISTORY_INTERVAL 60000L               // Historical data interval in millis
+#define SEALEVELPRESSURE_HPA (1006.581)           // Local sea level pressure
+#define HISTORY_VOLUME 16                         // Historical data storage volume
+#define HISTORY_INTERVAL 60000L                   // Historical data interval in millis
+//---------Rain sensor init---------
+#define RAINSENSOR_PIN A0                         // Rain sensor pin number
 
 //---------NTP init---------
 unsigned int localPort = 2390;                    // local port to listen for UDP packets
@@ -32,6 +34,7 @@ struct deviceData {
   float sensor_temp;                          // Temperature data
   float sensor_altitude;                      // Altitude data
   float sensor_pressure;                      // Pressure data
+  int rain_sensor_value;                      // Rain sensor data
 } current_status;
 
 struct historicalData {
@@ -51,15 +54,17 @@ void init_structures() {
   current_status.sensor_temp = 0;
   current_status.sensor_altitude = 0;
   current_status.sensor_pressure = 0;
+  current_status.rain_sensor_value = 0;
   historical_data.current_index = 0;
   time_data.epoch = seventyYears;
   time_data.localmillis = 0;
 }
 
-void readSensor() {
+void readSensors() {
   current_status.sensor_temp = bmp.readTemperature();
   current_status.sensor_pressure = bmp.readPressure() * 0.00750062;         // Convert mm/Hg to Pa
   current_status.sensor_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+  current_status.rain_sensor_value = map(analogRead(RAINSENSOR_PIN), 0, 1023, 5, 0);
 }
 
 void printCurrentToSerial() {
@@ -68,7 +73,9 @@ void printCurrentToSerial() {
   Serial.print(", Tmp ");
   Serial.print(current_status.sensor_temp);
   Serial.print(", Pr ");
-  Serial.println(current_status.sensor_pressure);
+  Serial.print(current_status.sensor_pressure);
+  Serial.print(", Rain ");
+  Serial.println(current_status.rain_sensor_value);
   Serial.println(createBlynkString(current_status.sensor_temp, current_status.sensor_pressure));
 }
 
@@ -197,7 +204,7 @@ void setup() {
   udp.begin(localPort);
   Serial.print("UDP local port: ");
   Serial.println(udp.localPort());
-  timer_read.setInterval(2000L, readSensor);
+  timer_read.setInterval(2000L, readSensors);
   timer_report.setInterval(10000L, reportData);
   timer_history.setInterval(HISTORY_INTERVAL, updateHistory);
   timer_rtc_update.setInterval(3600000L, updateTime);
@@ -207,7 +214,7 @@ void setup() {
     delay(300);
     while (1);
   }
-  readSensor();
+  readSensors();
   updateHistory();
   updateTime();
   Serial.println("MCU started...");
