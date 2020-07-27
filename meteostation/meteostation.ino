@@ -19,7 +19,9 @@ Adafruit_BMP280 bmp;
 #define HISTORY_INTERVAL 60000L                   // Historical data interval in millis
 //---------Rain sensor init---------
 #define RAINSENSOR_PIN A0                         // Rain sensor pin number
-
+#define RAINRELAY_PIN D5                          // Rain sensor enabling relay turns sensor periodically
+#define RAINREADINTERVAL 180000L                  // Rain sensor reading interval
+#define ENABLED_VALUE 0                           // Output value to enable sensor power
 //---------NTP init---------
 unsigned int localPort = 2390;                    // local port to listen for UDP packets
 IPAddress timeServerIP;                           // time.nist.gov NTP server address
@@ -35,6 +37,7 @@ struct deviceData {
   float sensor_altitude;                      // Altitude data
   float sensor_pressure;                      // Pressure data
   int rain_sensor_value;                      // Rain sensor data
+  unsigned long rs_last_read_time;            // Rain sensor last time read
 } current_status;
 
 struct historicalData {
@@ -42,6 +45,7 @@ struct historicalData {
   float sensor_temp[HISTORY_VOLUME];                      // Temperature data
   float sensor_pressure[HISTORY_VOLUME];                  // Pressure data
   unsigned long measurement_time[HISTORY_VOLUME];         // Time (millis)
+  int rain_sensor_value[HISTORY_VOLUME];
 } historical_data;
 
 struct timeData {
@@ -55,16 +59,33 @@ void init_structures() {
   current_status.sensor_altitude = 0;
   current_status.sensor_pressure = 0;
   current_status.rain_sensor_value = 0;
+  current_status.rs_last_read_time = 0;
   historical_data.current_index = 0;
   time_data.epoch = seventyYears;
   time_data.localmillis = 0;
+}
+
+int reverseValue(int sourceValue){
+  if(sourceValue==0){
+    return 1;
+  }else{
+    return 0;
+  }
 }
 
 void readSensors() {
   current_status.sensor_temp = bmp.readTemperature();
   current_status.sensor_pressure = bmp.readPressure() * 0.00750062;         // Convert mm/Hg to Pa
   current_status.sensor_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
-  current_status.rain_sensor_value = map(analogRead(RAINSENSOR_PIN), 0, 1023, 5, 0);
+  if(current_status.rs_last_read_time==0 || millis()-current_status.rs_last_read_time>RAINREADINTERVAL){
+    digitalWrite(RAINRELAY_PIN, ENABLED_VALUE);
+    Serial.println("Relay on");
+    delay(150);
+    current_status.rs_last_read_time = millis();
+    current_status.rain_sensor_value = map(analogRead(RAINSENSOR_PIN), 0, 1023, 100, 0);
+    digitalWrite(RAINRELAY_PIN, reverseValue(ENABLED_VALUE));
+  }
+  
 }
 
 void printCurrentToSerial() {
@@ -172,6 +193,18 @@ void reportData() {
   printCurrentToSerial();
   Blynk.virtualWrite(V6, gettime(1));
   Blynk.virtualWrite(V7, createBlynkString(current_status.sensor_temp, current_status.sensor_pressure));
+  
+  if(current_status.rain_sensor_value>1 && current_status.rain_sensor_value<=10){
+    Blynk.virtualWrite(V11, "Wet: probably light rain");
+  }else if (current_status.rain_sensor_value>40&&current_status.rain_sensor_value<=60){
+    Blynk.virtualWrite(V11, "Wet: light rain");
+  }else if (current_status.rain_sensor_value>40&&current_status.rain_sensor_value<=60){
+    Blynk.virtualWrite(V11, "Wet: rain");
+  }else if (current_status.rain_sensor_value>60){
+    Blynk.virtualWrite(V11, "Wet: heavy rain");
+  }else{
+    Blynk.virtualWrite(V11, "Dry");
+  }
   pinMode(Ledpin, OUTPUT);
   digitalWrite(Ledpin, HIGH);
   delay(500);
@@ -184,6 +217,7 @@ void updateHistory() {
 
   historical_data.sensor_temp[historical_data.current_index] = current_status.sensor_temp;
   historical_data.sensor_pressure[historical_data.current_index] = current_status.sensor_pressure;
+  historical_data.rain_sensor_value[historical_data.current_index] = current_status.rain_sensor_value;
   historical_data.measurement_time[historical_data.current_index] = millis();
 
   if (historical_data.current_index + 1 == HISTORY_VOLUME) {
@@ -196,6 +230,7 @@ void updateHistory() {
 
 void setup() {
   Serial.begin(115200);
+  pinMode(RAINRELAY_PIN, OUTPUT);
   //params auth, ssid, pass to be defined in settings.h
   Blynk.begin(auth, ssid, pass);
   Serial.println("IP address: ");
