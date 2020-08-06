@@ -78,6 +78,7 @@ struct deviceData {
   boolean is_connected;                       // Internet connection indicator
   unsigned long inet_reset_time;              // Time of begin reset procedure
   boolean is_rebooting;                       // Indicates reboot status
+  int online_status;                          // 0 - disconnected, 1 - WiFi connected, 2 - Internet connected
 } current_status;
 
 int revert_value(int value) {
@@ -91,6 +92,10 @@ int revert_value(int value) {
 void calc() {
   current_status.mp++;
   int diff = current_status.counts - current_status.prev_counts;
+  if(diff>500){
+    current_status.counts = current_status.prev_counts;
+    return;
+  }
   current_status.lmc = diff * multiplier;
   if (diff > CHANGE_LEVEL_DETECTION) {
     current_status.cpm = current_status.lmc;

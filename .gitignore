@@ -2,3 +2,4 @@ settings.h
 settings.cpp
 CREDS/
 power management/power-controller/settings.h
+esp-geiger/settings.h
