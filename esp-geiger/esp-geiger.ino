@@ -79,6 +79,7 @@ struct deviceData {
   unsigned long inet_reset_time;              // Time of begin reset procedure
   boolean is_rebooting;                       // Indicates reboot status
   int online_status;                          // 0 - disconnected, 1 - WiFi connected, 2 - Internet connected
+  unsigned int hw_error_detected;
 } current_status;
 
 int revert_value(int value) {
@@ -90,12 +91,24 @@ int revert_value(int value) {
 }
 
 void calc() {
-  current_status.mp++;
   int diff = current_status.counts - current_status.prev_counts;
-  if(diff>500){
+  if(diff>200){                       //chineese shitboard correction
     current_status.counts = current_status.prev_counts;
+    current_status.hw_error_detected = current_status.hw_error_detected + 2;
+    Serial.print("Difference (hw error detected): ");
+    Serial.println(diff);
     return;
   }
+  if(current_status.hw_error_detected>0){
+    current_status.counts = 0;
+    current_status.mp = 0;
+    current_status.prev_counts = 0;
+    Serial.print("HW errors: ");
+    Serial.println(current_status.hw_error_detected);
+    current_status.hw_error_detected--;
+    return;
+  }
+  current_status.mp++;
   current_status.lmc = diff * multiplier;
   if (diff > CHANGE_LEVEL_DETECTION) {
     current_status.cpm = current_status.lmc;
@@ -244,6 +257,7 @@ void structure_init() {
   current_status.relay_enabled = 0;
   current_status.is_relay_enabled = 0;
   current_status.last_rad_notification = 0;
+  current_status.hw_error_detected = 0;
   current_status.is_rebooting = false;
 }
 
@@ -273,7 +287,11 @@ BLYNK_APP_DISCONNECTED() {
 }
 
 void blynkSend() {
-  Blynk.virtualWrite(V0, current_status.cpm);
+  if(current_status.hw_error_detected>0){
+    Blynk.virtualWrite(V0, "HW error");
+  }else{
+    Blynk.virtualWrite(V0, current_status.cpm);
+  }
   Blynk.virtualWrite(V1, current_status.sensor_temp);
 }
 
@@ -294,7 +312,7 @@ void runCooler() {
 }
 
 void sendPushNotification() {
-  if (!current_status.is_connected) {
+  if (!current_status.is_connected || current_status.hw_error_detected>0) {
     return;
   }
   if (current_status.cpm < WARNING_LEVEL_CPM) {
