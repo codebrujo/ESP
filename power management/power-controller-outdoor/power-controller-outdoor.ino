@@ -135,6 +135,8 @@ void readDHT() {
 
 void setup() {
   Serial.begin(115200);
+  Serial.println("");
+  Serial.println("Starting hardware...");
   pinMode(BUTTONPIN, INPUT_PULLUP);                                        // Set pin to input for capturing GM Tube events
   pinMode(RELAYPIN, OUTPUT);                                               // Set pin to manage power relay
   pinMode(LEDPIN, OUTPUT);                                                 // Set pin to manage LED indicator
