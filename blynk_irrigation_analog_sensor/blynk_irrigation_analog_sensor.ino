@@ -71,6 +71,8 @@ byte revert_value(byte value) {
 void setup()
 {
   Serial.begin(115200);
+  Serial.println("");
+  Serial.println("Starting hardware");
   init_structures();
   //params auth, ssid, pass to be defined in settings.h
   Blynk.begin(auth, ssid, pass);
