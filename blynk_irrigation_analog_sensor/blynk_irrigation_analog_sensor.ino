@@ -6,7 +6,7 @@
 #include "settings.h"
 //---------IO init---------
 #define RELAYPIN D5                               // Pump relay
-#define RELAY_ENABLED_VALUE true                  // Value when relay is enabled
+#define RELAY_ENABLED_VALUE false                 // Value when relay is enabled
 #define HUMIDITY_PIN A0
 //---------DHT init---------
 #define DHTPIN D2                                 // DHT digital pin 1
@@ -33,11 +33,13 @@ WiFiUDP udp;                                      // A UDP instance to let us se
 const int GMT = 3;                                // GMT time conversion
 #define TIME_UPDATE_INTERVAL 3600000L             // Time update period
 //---------Business logic init---------
+#define IRRIGATION_TIME 5                         // Max time of irrigation
 struct deviceData {
   float sensor_temp;
   int sensor_hum;
   int sensor_ground_hum;
   byte irrigation_allowed;
+  byte manual_irrigation_on;
   byte report_mode;
   unsigned int irrigation_time;
   unsigned long last_irrigation;
@@ -98,10 +100,10 @@ void read_console() {
     if (str.equals("RESET\n")) {
       Serial.println("Reset..");
       ESP.restart();
-    } else if (str.equals("PIN_ON\n")) {
-      digitalWrite(RELAYPIN, true);
-    } else if (str.equals("PIN_OFF\n")) {
-      digitalWrite(RELAYPIN, false);
+    } else if (str.equals("PUMP_ON\n")) {
+      digitalWrite(RELAYPIN, RELAY_ENABLED_VALUE);
+    } else if (str.equals("PUMP_OFF\n")) {
+      digitalWrite(RELAYPIN, revert_value(RELAY_ENABLED_VALUE));
     } else if (str.equals("CLEAR_IRR_TIME\n")) {
       current_status.last_irrigation = 0;
     } else if (str.equals("READ_SENSOR\n")) {
@@ -124,20 +126,28 @@ void loop()
 }
 
 void performBusinessLogic() {
-  if (current_status.irrigation_time <= 5) {
+  if (current_status.irrigation_time <= IRRIGATION_TIME && current_status.manual_irrigation_on==1) {
     digitalWrite(RELAYPIN, RELAY_ENABLED_VALUE);
+    Blynk.virtualWrite(BLYNK_IRR_STATUS_VPIN, 255);
     readSensors();
   } else {
+    int lvalue = digitalRead(RELAYPIN);
+    if(lvalue==RELAY_ENABLED_VALUE){
+      Blynk.virtualWrite(BLYNK_IRR_STATUS_VPIN, 0);
+      current_status.last_irrigation = (millis() - time_data.localmillis) / 1000 + time_data.epoch;
+    }
     digitalWrite(RELAYPIN, revert_value(RELAY_ENABLED_VALUE));
   }
 }
 
 BLYNK_WRITE(BLYNK_IRR_BUTTON)
 {
-  int param_value = param.asInt();
+  current_status.manual_irrigation_on = param.asInt();
   Serial.print("BLYNK VPIN change: ");
-  Serial.println(param_value);
-  current_status.irrigation_time = 0;
+  Serial.println(current_status.manual_irrigation_on);
+  if(current_status.manual_irrigation_on==1){
+   current_status.irrigation_time = 0; 
+  }
   performBusinessLogic();
 }
 
@@ -146,14 +156,13 @@ char * createBlynkString() {
   int shift;
   char Str_sensor_1[10];
   char Str_sensor_2[10];
-  char StrResult[16] = "T:     H:    % ";
+  char StrResult[16] = "T:      H:    %";
   char *tmp;
   for (int i = 0; i < sizeof(Str_sensor_1) / sizeof(char); i++) {
     Str_sensor_1[i] = ' ';
     Str_sensor_2[i] = ' ';
   }
-
-  if (current_status.report_mode = 0) {
+  if (current_status.report_mode == 0) {
     current_status.report_mode = 1;
     shift = 3;
     dtostrf(current_status.sensor_temp, 4, 1, Str_sensor_1);
@@ -164,7 +173,7 @@ char * createBlynkString() {
       }
       StrResult[i + shift] = (char)ccode;
     }
-    shift = 12;
+    shift = 10;
     dtostrf(current_status.sensor_hum, 3, 0, Str_sensor_2);
     for (int i = 0; i < sizeof(Str_sensor_2) / sizeof(char); i++) {
       ccode = (int)Str_sensor_2[i];
@@ -176,7 +185,7 @@ char * createBlynkString() {
 
   } else {
     current_status.report_mode = 0;
-    for (int i = 0; i < sizeof(StrResult) / sizeof(char); i++) {
+    for (int i = 0; i < (sizeof(StrResult) / sizeof(char))-1; i++) {
       StrResult[i] = ' ';
     }
     StrResult[0] = 'G';
@@ -205,15 +214,15 @@ char * createBlynkString() {
 }
 
 void blynkSend() {
-  Blynk.virtualWrite(BLYNK_HB_VPIN, gettime(3, (millis() - time_data.localmillis) / 1000 + time_data.epoch));
+  Blynk.virtualWrite(BLYNK_HB_VPIN, gettime(1, (millis() - time_data.localmillis) / 1000 + time_data.epoch));
   Blynk.virtualWrite(BLYNK_SENSORS_VPIN, createBlynkString());
   int lvalue = digitalRead(RELAYPIN);
-  if (lvalue = RELAY_ENABLED_VALUE) {
+  if (lvalue == RELAY_ENABLED_VALUE) {
     Blynk.virtualWrite(BLYNK_IRR_STATUS_VPIN, 255);
   } else {
     Blynk.virtualWrite(BLYNK_IRR_STATUS_VPIN, 0);
   }
-  Blynk.virtualWrite(BLYNK_LAST_IRR_VPIN, gettime(1, current_status.last_irrigation));
+  Blynk.virtualWrite(BLYNK_LAST_IRR_VPIN, gettime(3, current_status.last_irrigation));
 }
 
 void reportData() {
@@ -229,11 +238,12 @@ void reportData() {
 }
 
 void readSensors() {
-  current_status.sensor_ground_hum = analogRead(HUMIDITY_PIN);
+  current_status.sensor_ground_hum = map(analogRead(HUMIDITY_PIN), 0, 855, 100, 0);
+  //current_status.sensor_ground_hum = analogRead(HUMIDITY_PIN);
   float sensor_temp = dht.readTemperature();
   if (sensor_temp != sensor_temp) {
     int lvalue = digitalRead(RELAYPIN);
-    if (lvalue = revert_value(RELAY_ENABLED_VALUE)) {
+    if (lvalue == revert_value(RELAY_ENABLED_VALUE)) {
       Serial.println("DHT22 lib returned NaN");
       dht.begin();
     }
