@@ -1,4 +1,4 @@
-#include <Wire.h>
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               #include <Wire.h>
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <BlynkSimpleEsp8266.h>
@@ -14,14 +14,14 @@
 DHT dht(DHTPIN, DHTTYPE);
 //---------BLYNK init---------
 #define BLYNK_PRINT Serial                        // Comment this out to disable prints and save space
-#define BLYNK_IRR_BUTTON V11                      // Blynk virtual PIN to start irrigation
+#define BLYNK_IRR_BUTTON V23                      // Blynk virtual PIN to start irrigation
 BlynkTimer report_timer;
 BlynkTimer timer_rtc_update;
 BlynkTimer timer_clock;
-#define BLYNK_HB_VPIN V8                          // heart beat
-#define BLYNK_SENSORS_VPIN V9                     // sensors
-#define BLYNK_IRR_STATUS_VPIN V12                    // irrigation status
-#define BLYNK_LAST_IRR_VPIN V13                   // last irrigated
+#define BLYNK_HB_VPIN V20                         // heart beat
+#define BLYNK_SENSORS_VPIN V21                    // sensors
+#define BLYNK_IRR_STATUS_VPIN V22                    // irrigation status
+#define BLYNK_LAST_IRR_VPIN V24                   // last irrigated
 //---------NTP init---------
 unsigned int localPort = 2390;                    // local port to listen for UDP packets
 IPAddress timeServerIP;                           // time.nist.gov NTP server address
@@ -223,6 +223,7 @@ void blynkSend() {
   } else {
     Blynk.virtualWrite(BLYNK_IRR_STATUS_VPIN, 0);
   }
+  
 }
 
 void reportData() {
