@@ -1,4 +1,6 @@
-#include <Adafruit_BMP280.h>
+#include "Wire.h"
+#include "Adafruit_Sensor.h"
+#include "Adafruit_BMP280.h"
 #include <BlynkSimpleEsp8266.h>
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
@@ -10,18 +12,11 @@ BlynkTimer timer_read;
 BlynkTimer timer_report;
 BlynkTimer timer_history;
 BlynkTimer timer_rtc_update;
-#define Ledpin 2
-
 //---------BMP280 init---------
 Adafruit_BMP280 bmp;
 #define SEALEVELPRESSURE_HPA (1006.581)           // Local sea level pressure
 #define HISTORY_VOLUME 16                         // Historical data storage volume
 #define HISTORY_INTERVAL 60000L                   // Historical data interval in millis
-//---------Rain sensor init---------
-#define RAINSENSOR_PIN A0                         // Rain sensor pin number
-#define RAINRELAY_PIN D5                          // Rain sensor enabling relay turns sensor periodically
-#define RAINREADINTERVAL 180000L                  // Rain sensor reading interval
-#define ENABLED_VALUE 0                           // Output value to enable sensor power
 //---------NTP init---------
 unsigned int localPort = 2390;                    // local port to listen for UDP packets
 IPAddress timeServerIP;                           // time.nist.gov NTP server address
@@ -36,9 +31,8 @@ struct deviceData {
   float sensor_temp;                          // Temperature data
   float sensor_altitude;                      // Altitude data
   float sensor_pressure;                      // Pressure data
-  int rain_sensor_value;                      // Rain sensor data
-  unsigned long rs_last_read_time;            // Rain sensor last time read
   int online_status;                          // 0 - disconnected, 1 - WiFi connected, 2 - Internet connected
+  int success_network;                        // index of successfully connected WiFi network
 } current_status;
 
 struct historicalData {
@@ -46,7 +40,6 @@ struct historicalData {
   float sensor_temp[HISTORY_VOLUME];                      // Temperature data
   float sensor_pressure[HISTORY_VOLUME];                  // Pressure data
   unsigned long measurement_time[HISTORY_VOLUME];         // Time (millis)
-  int rain_sensor_value[HISTORY_VOLUME];
 } historical_data;
 
 struct timeData {
@@ -59,9 +52,8 @@ void init_structures() {
   current_status.sensor_temp = 0;
   current_status.sensor_altitude = 0;
   current_status.sensor_pressure = 0;
-  current_status.rain_sensor_value = 0;
-  current_status.rs_last_read_time = 0;
   current_status.online_status = 0;
+  current_status.success_network = 0;
   historical_data.current_index = 0;
   time_data.epoch = seventyYears;
   time_data.localmillis = 0;
@@ -76,18 +68,19 @@ int reverseValue(int sourceValue) {
 }
 
 void readSensors() {
-  current_status.sensor_temp = bmp.readTemperature();
+  float temp = bmp.readTemperature();
+  current_status.sensor_temp = temp;
   current_status.sensor_pressure = bmp.readPressure() * 0.00750062;         // Convert mm/Hg to Pa
   current_status.sensor_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
-  if (current_status.rs_last_read_time == 0 || millis() - current_status.rs_last_read_time > RAINREADINTERVAL) {
-    digitalWrite(RAINRELAY_PIN, ENABLED_VALUE);
-    Serial.println("Relay on");
-    delay(150);
-    current_status.rs_last_read_time = millis();
-    current_status.rain_sensor_value = map(analogRead(RAINSENSOR_PIN), 0, 1023, 100, 0);
-    digitalWrite(RAINRELAY_PIN, reverseValue(ENABLED_VALUE));
-  }
 
+  /*if (temp < 100) {
+    bmp.begin(0x76);
+    Serial.println("Sensor error");
+  } else {
+    current_status.sensor_temp = temp;
+    current_status.sensor_pressure = bmp.readPressure() * 0.00750062;         // Convert mm/Hg to Pa
+    current_status.sensor_altitude = bmp.readAltitude(SEALEVELPRESSURE_HPA);
+  }*/
 }
 
 void printCurrentToSerial() {
@@ -96,10 +89,9 @@ void printCurrentToSerial() {
   Serial.print(", Tmp ");
   Serial.print(current_status.sensor_temp);
   Serial.print(", Pr ");
-  Serial.print(current_status.sensor_pressure);
-  Serial.print(", Rain ");
-  Serial.println(current_status.rain_sensor_value);
-  Serial.println(createBlynkString(current_status.sensor_temp, current_status.sensor_pressure));
+  Serial.println(current_status.sensor_pressure);
+  //Serial.print("Blynk String: ");
+  //Serial.println(createBlynkString(current_status.sensor_temp, current_status.sensor_pressure));
 }
 
 void printToSerial() {
@@ -187,6 +179,15 @@ char * createBlynkString(float sensor_temp, float sensor_pressure) {
   return (tmp);
 }
 
+void sendCurrentToBlynk() {
+  if (current_status.online_status != 3) {
+    return;
+  }
+  Blynk.virtualWrite(V10, gettime(1));
+  Blynk.virtualWrite(V2, createBlynkString(current_status.sensor_temp, current_status.sensor_pressure));
+  Blynk.virtualWrite(V3, current_status.sensor_temp);
+}
+
 void reportData() {
   getConnected();
   if (time_data.localmillis == 0) {
@@ -194,35 +195,13 @@ void reportData() {
   }
   //printToSerial();
   printCurrentToSerial();
-  if (current_status.online_status == 3) {
-    Blynk.virtualWrite(V6, gettime(1));
-    Blynk.virtualWrite(V7, createBlynkString(current_status.sensor_temp, current_status.sensor_pressure));
-
-    if (current_status.rain_sensor_value > 1 && current_status.rain_sensor_value <= 10) {
-      Blynk.virtualWrite(V11, "Wet: probably light rain");
-    } else if (current_status.rain_sensor_value > 40 && current_status.rain_sensor_value <= 60) {
-      Blynk.virtualWrite(V11, "Wet: light rain");
-    } else if (current_status.rain_sensor_value > 40 && current_status.rain_sensor_value <= 60) {
-      Blynk.virtualWrite(V11, "Wet: rain");
-    } else if (current_status.rain_sensor_value > 60) {
-      Blynk.virtualWrite(V11, "Wet: heavy rain");
-    } else {
-      Blynk.virtualWrite(V11, "Dry");
-    }
-  }
-  pinMode(Ledpin, OUTPUT);
-  digitalWrite(Ledpin, HIGH);
-  delay(500);
-  digitalWrite(Ledpin, LOW);
-  pinMode(Ledpin, INPUT);
-
+  sendCurrentToBlynk();
 }
 
 void updateHistory() {
 
   historical_data.sensor_temp[historical_data.current_index] = current_status.sensor_temp;
   historical_data.sensor_pressure[historical_data.current_index] = current_status.sensor_pressure;
-  historical_data.rain_sensor_value[historical_data.current_index] = current_status.rain_sensor_value;
   historical_data.measurement_time[historical_data.current_index] = millis();
 
   if (historical_data.current_index + 1 == HISTORY_VOLUME) {
@@ -233,32 +212,110 @@ void updateHistory() {
 
 }
 
+int connectToWiFi(int netIndex) {
+  int attempts = 10;
+  Serial.print("SSID ");
+  switch (netIndex)
+  {
+    case 1:
+      Serial.print(ssid);
+      WiFi.begin(ssid, pass);
+      delay(1000);
+      while (WiFi.status() != WL_CONNECTED && attempts > 0) {
+        delay(1000);
+        Serial.print(".");
+        attempts--;
+      }
+      break;
+    case 2:
+      Serial.print(ssid2);
+      WiFi.begin(ssid2, pass2);
+      delay(1000);
+      while (WiFi.status() != WL_CONNECTED && attempts > 0) {
+        delay(1000);
+        Serial.print(".");
+        attempts--;
+      }
+      break;
+    case 3:
+      Serial.print(ssid3);
+      WiFi.begin(ssid3, pass3);
+      delay(1000);
+      while (WiFi.status() != WL_CONNECTED && attempts > 0) {
+        delay(1000);
+        Serial.print(".");
+        attempts--;
+      }
+      break;
+    case 4:
+      Serial.print(ssid4);
+      WiFi.begin(ssid4, pass4);
+      delay(1000);
+      while (WiFi.status() != WL_CONNECTED && attempts > 0) {
+        delay(1000);
+        Serial.print(".");
+        attempts--;
+      }
+      break;
+    case 5:
+      Serial.print(ssid5);
+      WiFi.begin(ssid5, pass5);
+      delay(1000);
+      while (WiFi.status() != WL_CONNECTED && attempts > 0) {
+        delay(1000);
+        Serial.print(".");
+        attempts--;
+      }
+      break;
+    case 6:
+      Serial.print(ssid6);
+      WiFi.begin(ssid6, pass6);
+      delay(1000);
+      while (WiFi.status() != WL_CONNECTED && attempts > 0) {
+        delay(1000);
+        Serial.print(".");
+        attempts--;
+      }
+      break;
+  }
+  Serial.println("");
+  if (WiFi.status() == WL_CONNECTED) {
+    return 1;
+  } else {
+    return 0;
+  }
+}
+
 void getConnected() {
-  if(current_status.online_status == 3){
+  if (current_status.online_status == 3) {
     return;
   }
   //params auth, ssid, pass to be defined in settings.h
-  int attempts = 5;
+  int attempts = COUNT_OF_AVAILABLE_NETWORKS;
   if (current_status.online_status == 0) {   //try to connect to WiFi
-    Serial.print("Connecting to WiFi.");
+    Serial.println("Connecting to WiFi");
     WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, pass);
-    delay(1000);
-    while (WiFi.status() != WL_CONNECTED && attempts > 0) {
-      delay(500);
-      Serial.print(".");
-      attempts--;
-    }
-    Serial.println("");
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.print("WiFi connected to ");
-      Serial.println(ssid);
+    int isConnected = connectToWiFi(PREFERABLE_NETWORK);
+    if (isConnected) {
       Serial.println("IP address: ");
       Serial.println(WiFi.localIP());
+      attempts = 0;
       current_status.online_status = 1;
-    } else {
-      Serial.print("Cannot connect to WiFi network ");
-      Serial.println(ssid);
+      current_status.success_network = PREFERABLE_NETWORK;
+    }
+    while (attempts > 0) {
+      isConnected = connectToWiFi(attempts);
+      if (isConnected) {
+        Serial.println("IP address: ");
+        Serial.println(WiFi.localIP());
+        current_status.online_status = 1;
+        current_status.success_network = attempts;
+        break;
+      }
+      attempts--;
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Cannot connect to WiFi networks");
     }
   }
 
@@ -281,25 +338,38 @@ void getConnected() {
       Serial.print("Cannot establish internet connection");
     }
   }
-
   if (current_status.online_status == 2) { //try to connect to Blynk
-    Blynk.begin(auth, ssid, pass);
+    Serial.print("Connecting to Blynk... ");
+    if (current_status.success_network == 1) {
+      Blynk.begin(auth, ssid, pass);
+    } else if (current_status.success_network == 2) {
+      Blynk.begin(auth, ssid2, pass2);
+    } else if (current_status.success_network == 3) {
+      Blynk.begin(auth, ssid3, pass3);
+    } else if (current_status.success_network == 4) {
+      Blynk.begin(auth, ssid4, pass4);
+    } else if (current_status.success_network == 5) {
+      Blynk.begin(auth, ssid5, pass5);
+    } else if (current_status.success_network == 6) {
+      Blynk.begin(auth, ssid6, pass6);
+    }
+    Serial.println("done");
     current_status.online_status = 3;
-    Serial.println("Blynk service connected");
   }
 }
 
 void setup() {
   Serial.begin(115200);
   Serial.println("MCU init...");
-  pinMode(RAINRELAY_PIN, OUTPUT);
   timer_read.setInterval(2000L, readSensors);
   timer_report.setInterval(10000L, reportData);
   timer_history.setInterval(HISTORY_INTERVAL, updateHistory);
   timer_rtc_update.setInterval(3600000L, updateTime);
   init_structures();
+  Wire.begin(D6, D5);
+  Wire.setClock(100000); 
   if (!bmp.begin(0x76)) {
-    Serial.println("Could not find a valid BME280 sensor, check wiring!");
+    Serial.println("Could not find a valid BMP280 sensor, check wiring!");
     delay(300);
     while (1);
   }
@@ -307,7 +377,7 @@ void setup() {
   readSensors();
   updateHistory();
 
-  Serial.println("MCU setup end. Operating mode.");
+  Serial.println("MCU setup complete. Switched to operating mode.");
 }
 
 void loop() {
@@ -349,7 +419,7 @@ char * gettime(int time_mode)
 }
 
 void updateTime() {
-  if(current_status.online_status == 0){ //No WiFi network
+  if (current_status.online_status == 0) { //No WiFi network
     return;
   }
   //get a random server from the pool
