@@ -3,6 +3,7 @@
 #include <ESP8266WiFi.h>
 #include <WiFiUdp.h>
 #include <BlynkSimpleEsp8266.h>
+#include <Ticker.h>  //Ticker Library
 #include "DHT.h"
 #include "settings.h"
 //---------IO init---------
@@ -14,10 +15,12 @@
 BlynkTimer report_timer;
 BlynkTimer timer_rtc_update;
 BlynkTimer timer_clock;
-BlynkTimer timer_btn;
+BlynkTimer timer_wifi;
 #define BLYNKVPIN V8                              // BLYNK managed pin
 #define BLYNKHBVPIN V9                            // BLYNK heartbeat virtual pin number
 #define BLYNKTEMPVPIN V10                         // BLYNK temperature indicator
+//---------Independent timers-----
+Ticker btn_ticker;
 //---------NTP init---------
 unsigned int localPort = 2390;                    // local port to listen for UDP packets
 IPAddress timeServerIP;                           // time.nist.gov NTP server address
@@ -39,6 +42,7 @@ struct deviceData {
   byte last_button_state;
   float sensor_temp;                              // Temperature sensor data
   int sensor_hum;                                 // Humidity sensor data
+  int connection_state;                           // Internet connection state: 0 - no connection, 1 - WiFi connected, 2 - internet connected
 } current_status;
 
 struct timeData {
@@ -51,6 +55,7 @@ void init_structures(){
   current_status.epoch = 0;
   current_status.enabled = 0;
   current_status.last_button_state = 1;                                    // Button is not pushed
+  current_status.connection_state = 0;
   time_data.epoch = seventyYears;
   time_data.localmillis = 0;
 }
@@ -104,8 +109,10 @@ char * createBlynkString(float sensor_1, float sensor_2) {
   return (tmp);
 }
 
-
 void blynkSend() {
+  if (current_status.connection_state < 2) {
+    return;
+  }
   Blynk.virtualWrite(BLYNKHBVPIN, gettime(1));
   Blynk.virtualWrite(BLYNKTEMPVPIN, createBlynkString(current_status.sensor_temp, current_status.sensor_hum));
 }
@@ -133,23 +140,88 @@ void readDHT() {
   }
 }
 
+void connectWiFi(){
+  if(current_status.connection_state > 0){
+    return;
+  }
+  int attempts = 15;
+  int attempt = 0;
+  Serial.print("Connecting to ");
+  Serial.print(ssid);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    if(attempt > attempts){
+      break;
+    }
+    attempt++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(" success");
+    current_status.connection_state = 1;
+    return;
+  } else {
+    Serial.println(" failed");
+  }
+  attempt = 0;
+  Serial.print("Connecting to ");
+  Serial.print(ssid1);
+  WiFi.begin(ssid1, pass1);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    if(attempt > attempts){
+      break;
+    }
+    attempt++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println(" success");
+    current_status.connection_state = 1;
+    return;
+  } else {
+    Serial.println(" failed");
+  }
+}
+
+void connectBlynk(){
+  if(current_status.connection_state < 2){
+    Serial.println("connectBlynk - no connection");
+    return;
+  }
+  Serial.print("Connecting to Blynk");
+  Blynk.begin(auth, ssid, pass);
+  Serial.println("...");
+  timer_rtc_update.setInterval(3600000L, updateTime);
+}
+
+void reconnectServices(){
+  if (current_status.connection_state == 2) {
+    return;
+  }
+  connectWiFi();
+  connectBlynk();
+}
+
 void setup() {
   Serial.begin(115200);
-  Serial.println("");
-  Serial.println("Starting hardware...");
   pinMode(BUTTONPIN, INPUT_PULLUP);                                        // Set pin to input for capturing GM Tube events
   pinMode(RELAYPIN, OUTPUT);                                               // Set pin to manage power relay
   pinMode(LEDPIN, OUTPUT);                                                 // Set pin to manage LED indicator
   init_structures();
-  Blynk.begin(auth, ssid, pass);
+  Serial.println("");
+  Serial.println("Starting hardware...");
+  btn_ticker.attach_ms(50L, checkButton);
   dht.begin();
-  Serial.println("...");
+  connectWiFi();
   Serial.println("Starting UDP");
   udp.begin(localPort);
-  report_timer.setInterval(5000L, reportData);
   updateTime();
-  timer_rtc_update.setInterval(3600000L, updateTime);
-  timer_btn.setInterval(100L, checkButton);
+  connectBlynk();
+  report_timer.setInterval(5000L, reportData);
+  timer_wifi.setInterval(30000L, reconnectServices);
 }
 
 BLYNK_CONNECTED() {
@@ -202,7 +274,7 @@ void checkButton(){
 
 void loop() {
   Blynk.run();
-  timer_btn.run();
+  timer_wifi.run();
   report_timer.run();
   timer_rtc_update.run();
 }
@@ -238,6 +310,10 @@ char * gettime(int time_mode)
 }
 
 void updateTime() {
+  if(current_status.connection_state == 0){
+    Serial.println("updateTime -- no connection");
+    return;
+  }
   //get a random server from the pool
   WiFi.hostByName(ntpServerName, timeServerIP);
 
@@ -269,6 +345,7 @@ void updateTime() {
   if (!cb) {
     Serial.println("no packet yet");
   } else {
+    current_status.connection_state = 2;
     Serial.print("packet received, length=");
     Serial.println(cb);
     // We've received a packet, read the data from it
