@@ -9,7 +9,7 @@
 //---------IO init---------
 #define BUTTONPIN D4                              // Button pin
 #define RELAYPIN D5                               // Relay out
-#define RELAY_ENABLED_VALUE true                  // Value when relay is enabled
+#define RELAY_ENABLED_VALUE false                 // Value when relay is enabled
 #define LEDPIN D6                                 // LED out (heating)
 #define LEDPINREADY D8                            // LED out (waiting for threshold)
 //---------BLYNK init---------
@@ -17,9 +17,10 @@ BlynkTimer report_timer;
 BlynkTimer timer_rtc_update;
 BlynkTimer timer_clock;
 BlynkTimer timer_wifi;
-#define BLYNKVPIN V8                              // BLYNK managed pin
-#define BLYNKHBVPIN V9                            // BLYNK heartbeat virtual pin number
-#define BLYNKTEMPVPIN V10                         // BLYNK temperature indicator
+#define BLYNKVPIN V25                             // BLYNK managed pin
+#define BLYNKHBVPIN V26                           // BLYNK heartbeat virtual pin number
+#define BLYNKTEMPVPIN V27                         // BLYNK temperature indicator
+#define ATTEMPTS_TO_REBOOT 10                     // Temperature that turns relay off
 //---------Independent timers-----
 Ticker btn_ticker;
 //---------NTP init---------
@@ -30,35 +31,48 @@ const int NTP_PACKET_SIZE = 48;                   // NTP time stamp is in the fi
 byte packetBuffer[ NTP_PACKET_SIZE];              //buffer to hold incoming and outgoing packets
 const unsigned long seventyYears = 2208988800UL;
 WiFiUDP udp;                                      // A UDP instance to let us send and receive packets over UDP
-const int GMT = 3;                                //GMT time conversion
+const int GMT = 3;                                // GMT time conversion
+#define START_HEAT_HOUR 8                         // Hour when auto mode is on
+#define STOP_HEAT_HOUR 21                         // Hour when auto mode is off
 //---------DHT init---------
 #define DHTPIN D2                                 // DHT digital pin definition
 #define DHTTYPE DHT22                             // DHT 22  (AM2302), AM2321
-volatile unsigned int cooler_on_temp;             // Temperature turns relay on
+#define HEATER_OFF_TEMP 19                        // Temperature that turns relay off
 DHT dht(DHTPIN, DHTTYPE);
 //---------Business logic init---------
 struct deviceData {
   unsigned long epoch;
   byte enabled;
+  byte controlState;
   byte last_button_state;
+  byte red_led_state;
+  byte green_led_state;
   float sensor_temp;                              // Temperature sensor data
   int sensor_hum;                                 // Humidity sensor data
   int connection_state;                           // Internet connection state: 0 - no connection, 1 - WiFi connected, 2 - internet connected
+  int failed_attempts;                            // Failed connection attempts counter
 } current_status;
 
 struct timeData {
   unsigned long epoch;                            // Recieved time
   unsigned long localmillis;                      // Local time when epoch recieved
+  int current_hour;                               // Current hour
 } time_data;
 
 
 void init_structures(){
   current_status.epoch = 0;
   current_status.enabled = 0;
-  current_status.last_button_state = 1;                                    // Button is not pushed
+  current_status.controlState = 0;
+  current_status.last_button_state = 1;           // Button is not pushed
+  current_status.red_led_state = 0;
+  current_status.green_led_state = 0;
   current_status.connection_state = 0;
+  current_status.sensor_temp = 100;
+  current_status.failed_attempts = 0;
   time_data.epoch = seventyYears;
   time_data.localmillis = 0;
+  time_data.current_hour = 0;
 }
 
 char * createBlynkString(float sensor_1, float sensor_2) {
@@ -112,6 +126,10 @@ char * createBlynkString(float sensor_1, float sensor_2) {
 
 void blynkSend() {
   if (current_status.connection_state < 2) {
+    if (current_status.failed_attempts > ATTEMPTS_TO_REBOOT){
+      ESP.restart();
+    }
+    current_status.failed_attempts++;
     return;
   }
   Blynk.virtualWrite(BLYNKHBVPIN, gettime(1));
@@ -120,12 +138,17 @@ void blynkSend() {
 
 void reportData(){
   readDHT();
+  performBusinessLogic();
   Serial.print(gettime(1));
+  Serial.print(": h = ");
+  Serial.print(time_data.current_hour);
+  Serial.print(": state = ");
+  Serial.print(current_status.controlState);
   Serial.print(": enabled = ");
   Serial.print(current_status.enabled);
-  Serial.print(": sensor_temp = ");
+  Serial.print(": temp = ");
   Serial.print(current_status.sensor_temp);
-  Serial.print(": sensor_hum = ");
+  Serial.print(": hum = ");
   Serial.println(current_status.sensor_hum);
   blynkSend();
 }
@@ -200,6 +223,7 @@ void connectBlynk(){
 
 void reconnectServices(){
   if (current_status.connection_state == 2) {
+    current_status.failed_attempts = 0;
     return;
   }
   connectWiFi();
@@ -210,7 +234,9 @@ void setup() {
   Serial.begin(115200);
   pinMode(BUTTONPIN, INPUT_PULLUP);                                        // Set pin to input for capturing GM Tube events
   pinMode(RELAYPIN, OUTPUT);                                               // Set pin to manage power relay
+  digitalWrite(RELAYPIN, revert_value(RELAY_ENABLED_VALUE));
   pinMode(LEDPIN, OUTPUT);                                                 // Set pin to manage LED indicator
+  pinMode(LEDPINREADY, OUTPUT);                                            // Set pin to manage LED indicator
   init_structures();
   Serial.println("");
   Serial.println("Starting hardware...");
@@ -231,16 +257,16 @@ BLYNK_CONNECTED() {
 
 BLYNK_WRITE(BLYNKVPIN)
 {
-  current_status.enabled = param.asInt();
+  current_status.controlState = param.asInt();
   performBusinessLogic();
 }
 
-void invertButtonState(){
-  if(current_status.enabled == 0){
-    current_status.enabled = 1;
-  }else{
-    current_status.enabled = 0;
+void changeControlState(){
+  current_status.controlState = current_status.controlState + 1;
+  if(current_status.controlState > 2){
+    current_status.controlState = 0;
   }
+  performBusinessLogic();
 }
 
 byte revert_value(byte value) {
@@ -252,14 +278,57 @@ byte revert_value(byte value) {
 }
 
 void performBusinessLogic(){
+  byte restrictedBySchedule = 0;
+  if(time_data.current_hour < START_HEAT_HOUR || time_data.current_hour >= STOP_HEAT_HOUR){
+    restrictedBySchedule = 1;
+  }
+  if (current_status.controlState == 2){          // heater on
+    current_status.enabled = 1;
+  }else if(current_status.controlState == 1){     // temp control
+    if(current_status.sensor_temp > HEATER_OFF_TEMP + 1){
+      current_status.enabled = 0;
+    }else if (current_status.sensor_temp < HEATER_OFF_TEMP){
+      current_status.enabled = 1;
+    }
+    if(restrictedBySchedule){
+      current_status.enabled = 0;
+    }
+  }else{
+    current_status.enabled = 0;
+  }
   if(current_status.enabled){
     digitalWrite(RELAYPIN, RELAY_ENABLED_VALUE);
-    digitalWrite(LEDPIN, true);
   }else{
     digitalWrite(RELAYPIN, revert_value(RELAY_ENABLED_VALUE));
+  }
+  if (current_status.controlState == 2){          // heater on
+    digitalWrite(LEDPINREADY, false);
+    digitalWrite(LEDPIN, true);
+  }else if(current_status.controlState == 1){     // temp control
+    if(current_status.enabled){
+      if(current_status.green_led_state){
+        digitalWrite(LEDPINREADY, false);
+        digitalWrite(LEDPIN, true);
+      }else{
+        digitalWrite(LEDPINREADY, true);
+        digitalWrite(LEDPIN, false);
+      }
+    }else{
+      if(restrictedBySchedule){
+        digitalWrite(LEDPINREADY, revert_value(current_status.green_led_state));
+      }else{
+        digitalWrite(LEDPINREADY, true);
+      }
+      digitalWrite(LEDPIN, false);
+    }
+  }else{
+    digitalWrite(LEDPINREADY, false);
     digitalWrite(LEDPIN, false);
   }
-  Blynk.virtualWrite(BLYNKVPIN, current_status.enabled);
+  current_status.green_led_state = digitalRead(LEDPINREADY);
+  current_status.red_led_state = digitalRead(LEDPIN);
+
+  Blynk.virtualWrite(BLYNKVPIN, current_status.controlState);
 }
 
 void checkButton(){
@@ -267,8 +336,7 @@ void checkButton(){
   if(current_status.last_button_state != current_button_state && current_status.last_button_state == 0){
     Serial.print("current_button_state = ");
     Serial.println(current_button_state);
-    invertButtonState();
-    performBusinessLogic();
+    changeControlState();
   }
   current_status.last_button_state = current_button_state;
 }
@@ -290,6 +358,11 @@ char * gettime(int time_mode)
   char s[40];
   char *tmp;
   for (int i = 0; i < 40; i++) s[i] = 0;
+  
+  char h[40];
+  for (int i = 0; i < 40; i++) h[i] = 0;
+  strftime(h, 40, "%H", u);
+  time_data.current_hour = ((int)h[0]-48)*10+(int)h[1]-48;
   int length;
   switch (time_mode)
   {
