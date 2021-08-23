@@ -18,9 +18,12 @@ BlynkTimer timer_rtc_update;
 BlynkTimer timer_clock;
 BlynkTimer timer_wifi;
 #define BLYNKVPIN V25                             // BLYNK managed pin
-#define BLYNKHBVPIN V26                           // BLYNK heartbeat virtual pin number
+#define BLYNKSTATUSVPIN V26                       // BLYNK temperature indicator
 #define BLYNKTEMPVPIN V27                         // BLYNK temperature indicator
 #define ATTEMPTS_TO_REBOOT 10                     // Temperature that turns relay off
+#define BLYNKHOURPIN V28                          // Auto mode off hour pin
+#define BLYNKTCONTROLVPIN V29                     // Temperature control pin
+#define BLYNKSTARTHOURPIN V30                     // Auto mode on hour pin
 //---------Independent timers-----
 Ticker btn_ticker;
 //---------NTP init---------
@@ -32,12 +35,12 @@ byte packetBuffer[ NTP_PACKET_SIZE];              //buffer to hold incoming and 
 const unsigned long seventyYears = 2208988800UL;
 WiFiUDP udp;                                      // A UDP instance to let us send and receive packets over UDP
 const int GMT = 3;                                // GMT time conversion
-#define START_HEAT_HOUR 8                         // Hour when auto mode is on
-#define STOP_HEAT_HOUR 21                         // Hour when auto mode is off
+unsigned int start_heat_hour = 8;                 // Hour when auto mode is off
+unsigned int stop_heat_hour = 23;                 // Hour when auto mode is off
 //---------DHT init---------
 #define DHTPIN D2                                 // DHT digital pin definition
 #define DHTTYPE DHT22                             // DHT 22  (AM2302), AM2321
-#define HEATER_OFF_TEMP 19                        // Temperature that turns relay off
+unsigned int heat_off_temp = 19;                  // Temperature that turns relay off
 DHT dht(DHTPIN, DHTTYPE);
 //---------Business logic init---------
 struct deviceData {
@@ -51,6 +54,7 @@ struct deviceData {
   int sensor_hum;                                 // Humidity sensor data
   int connection_state;                           // Internet connection state: 0 - no connection, 1 - WiFi connected, 2 - internet connected
   int failed_attempts;                            // Failed connection attempts counter
+  int report_tick;                                // Failed connection attempts counter
 } current_status;
 
 struct timeData {
@@ -70,12 +74,13 @@ void init_structures(){
   current_status.connection_state = 0;
   current_status.sensor_temp = 100;
   current_status.failed_attempts = 0;
+  current_status.report_tick = 0;
   time_data.epoch = seventyYears;
   time_data.localmillis = 0;
   time_data.current_hour = 0;
 }
 
-char * createBlynkString(float sensor_1, float sensor_2) {
+char * createSensorString(float sensor_1, float sensor_2) {
   int i, ccode; 
   int shift1 = 3;
   int shift2 = 12;
@@ -124,6 +129,39 @@ char * createBlynkString(float sensor_1, float sensor_2) {
   return (tmp);
 }
 
+void reportStatusToBlynk(){
+  if (current_status.controlState == 2){          // heater on
+    Blynk.virtualWrite(BLYNKSTATUSVPIN, "MODE: ON");
+  }else if(current_status.controlState == 1){     // temp control
+    if(current_status.enabled){
+      Blynk.virtualWrite(BLYNKSTATUSVPIN, "MODE: AUTO ON");
+    }else{
+      if(getScheduleRestriction()){
+        Blynk.virtualWrite(BLYNKSTATUSVPIN, "MODE: TIMER OFF");
+      }else{
+        Blynk.virtualWrite(BLYNKSTATUSVPIN, "MODE: AUTO OFF");
+      }
+    }
+  }else if(current_status.controlState == 0){
+    Blynk.virtualWrite(BLYNKSTATUSVPIN, "MODE: OFF");
+  }else{
+    Blynk.virtualWrite(BLYNKSTATUSVPIN, "MODE: N/A");
+  }
+}
+
+void reportStateToBlynk() {
+  if(current_status.report_tick == 0){
+    reportStatusToBlynk();
+  }else if(current_status.report_tick == 1){
+    Blynk.virtualWrite(BLYNKSTATUSVPIN, gettime(1));
+  }
+  Blynk.virtualWrite(BLYNKTEMPVPIN, createSensorString(current_status.sensor_temp, current_status.sensor_hum));
+  current_status.report_tick++;
+  if(current_status.report_tick>1){
+    current_status.report_tick = 0;
+  }
+}
+
 void blynkSend() {
   if (current_status.connection_state < 2) {
     if (current_status.failed_attempts > ATTEMPTS_TO_REBOOT){
@@ -132,19 +170,16 @@ void blynkSend() {
     current_status.failed_attempts++;
     return;
   }
-  Blynk.virtualWrite(BLYNKHBVPIN, gettime(1));
-  Blynk.virtualWrite(BLYNKTEMPVPIN, createBlynkString(current_status.sensor_temp, current_status.sensor_hum));
+  reportStateToBlynk();
 }
 
 void reportData(){
   readDHT();
   performBusinessLogic();
   Serial.print(gettime(1));
-  Serial.print(": h = ");
-  Serial.print(time_data.current_hour);
-  Serial.print(": state = ");
+  Serial.print(": mode=");
   Serial.print(current_status.controlState);
-  Serial.print(": enabled = ");
+  Serial.print(": on=");
   Serial.print(current_status.enabled);
   Serial.print(": temp = ");
   Serial.print(current_status.sensor_temp);
@@ -255,10 +290,26 @@ BLYNK_CONNECTED() {
   Blynk.syncAll();
 }
 
+BLYNK_WRITE(BLYNKTCONTROLVPIN)
+{
+  heat_off_temp = param.asInt();
+  performBusinessLogic();
+}
+
 BLYNK_WRITE(BLYNKVPIN)
 {
   current_status.controlState = param.asInt();
   performBusinessLogic();
+}
+
+BLYNK_WRITE(BLYNKHOURPIN)
+{
+  stop_heat_hour = param.asInt();
+}
+
+BLYNK_WRITE(BLYNKSTARTHOURPIN)
+{
+  start_heat_hour = param.asInt();
 }
 
 void changeControlState(){
@@ -277,17 +328,22 @@ byte revert_value(byte value) {
   }
 }
 
-void performBusinessLogic(){
+byte getScheduleRestriction(){
   byte restrictedBySchedule = 0;
-  if(time_data.current_hour < START_HEAT_HOUR || time_data.current_hour >= STOP_HEAT_HOUR){
+  if(time_data.current_hour < start_heat_hour || time_data.current_hour >= stop_heat_hour){
     restrictedBySchedule = 1;
   }
+  return restrictedBySchedule;
+}
+
+void performBusinessLogic(){
+  byte restrictedBySchedule = getScheduleRestriction();
   if (current_status.controlState == 2){          // heater on
     current_status.enabled = 1;
   }else if(current_status.controlState == 1){     // temp control
-    if(current_status.sensor_temp > HEATER_OFF_TEMP + 1){
+    if(current_status.sensor_temp > heat_off_temp + 1){
       current_status.enabled = 0;
-    }else if (current_status.sensor_temp < HEATER_OFF_TEMP){
+    }else if (current_status.sensor_temp < heat_off_temp){
       current_status.enabled = 1;
     }
     if(restrictedBySchedule){
