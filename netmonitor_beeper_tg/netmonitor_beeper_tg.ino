@@ -17,7 +17,7 @@ Pinger pinger;
 #define LED_YELLOW D7
 #define LED_RED D8
 //---------Bot init---------
-#define CHAT_ID "-974110095"
+#define CHAT_ID "-1002345365128"
 FastBot bot(auth);
 //---------Business logic init---------
 #define DEVICE_NAME "netmon"
@@ -188,6 +188,7 @@ void setup() {
     bot.attach(newMsg);
     setupPinger();
   }
+  
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(LED_GREEN, OUTPUT);
   pinMode(LED_YELLOW, OUTPUT);

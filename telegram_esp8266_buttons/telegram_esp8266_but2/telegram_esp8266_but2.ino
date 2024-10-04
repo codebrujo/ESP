@@ -26,7 +26,7 @@ Pinger pinger;
 // red - 3V
 // black - G
 //---------Bot init---------
-#define CHAT_ID "-805760286"
+#define CHAT_ID "-1002452003742"
 FastBot bot(auth);
 //---------Business logic init---------
 #define DEVICE_NAME "but2"
